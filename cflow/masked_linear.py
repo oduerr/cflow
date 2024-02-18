@@ -3,6 +3,8 @@ from tensorflow import keras
 from keras import layers, Sequential, Input
 import numpy as np
 
+from cflow.one_dim_transforms import h_dag_dash_extra, h_dag_extra
+
 def create_masks_np(adjacency, hidden_features=(64, 64), activation='relu'):
     out_features, in_features = adjacency.shape
     adjacency, inverse_indices = np.unique(adjacency, axis=0, return_inverse=True)
@@ -30,6 +32,9 @@ def create_masks_np(adjacency, hidden_features=(64, 64), activation='relu'):
     return masks
 
 class LinearMasked(keras.layers.Layer):
+    """
+    A linear layer with a mask applied to the weights.
+    """
     
     def __init__(self, units=32, mask=None, name=None, **kwargs):
         super().__init__(name=name, **kwargs)
@@ -45,11 +50,22 @@ class LinearMasked(keras.layers.Layer):
         self.b = self.add_weight(
             shape=(self.units,), initializer="random_normal", trainable=True
         )
-        # Ensure the mask is the correct shape and convert it to a tensor
+
+        # Handle the mask conversion if it's a dictionary (when loaded from a saved model)
         if self.mask is not None:
-            if self.mask.shape != self.w.shape:
-                raise ValueError("Mask shape must match weights shape")
-            self.mask = tf.convert_to_tensor(self.mask, dtype=self.w.dtype)
+            if isinstance(self.mask, dict) or isinstance(self.mask, tf.__internal__.tracking.AutoTrackable):
+                # Extract the mask value and dtype from the dictionary
+                mask_value = self.mask.get('config').get('value')
+                mask_dtype = self.mask.get('config').get('dtype')
+                # Convert the mask value back to a numpy array
+                mask_np = np.array(mask_value, dtype=mask_dtype)
+                # Convert the numpy array to a TensorFlow tensor
+                self.mask = tf.convert_to_tensor(mask_np, dtype=mask_dtype)
+            else:
+                # Ensure the mask is the correct shape and convert it to a tensor
+                if self.mask.shape != self.w.shape:
+                    raise ValueError("Mask shape must match weights shape")
+                self.mask = tf.convert_to_tensor(self.mask, dtype=self.w.dtype)
 
     def call(self, inputs):
         if self.mask is not None:
@@ -58,11 +74,36 @@ class LinearMasked(keras.layers.Layer):
         else:
             masked_w = self.w
         return tf.matmul(inputs, masked_w) + self.b
+    
+    def get_config(self):
+        config = super().get_config()
+        config.update({
+            'units': self.units,
+            'mask': self.mask.numpy() if self.mask is not None else None,  # Convert mask to numpy array if it's a tensor
+        })
+        return config
+
+@tf.keras.utils.register_keras_serializable()
+def dag_loss(t_i, theta_tilde):
+    """
+        The loss function for the MAF model.
+        @param t_i: The observed values of shape (batch_size, |x|) where |x| is the number of features.
+        @param theta_tilde: The unrestricted parameters of shape (batch_size, |x|, order) usually output by the MAF model. 
+    """
+    L_START = 0.0001
+    R_START = 0.9999
+    
+    theta = to_theta3(theta_tilde)
+    h_ti = h_dag_extra(t_i, theta, L_START, R_START)
+    log_latent_density = -h_ti - 2 * tf.math.softplus(-h_ti)
+    h_dag_dashd = h_dag_dash_extra(t_i, theta, L_START, R_START)
+    log_lik = log_latent_density + tf.math.log(tf.math.abs(h_dag_dashd))
+    return -tf.reduce_mean(log_lik)
+
 
 def create_theta_tilde_maf(adjacency, order, layer_sizes, masks):
     input_layer = Input(shape=(adjacency.shape[1],))
     outs = []
-
     for r in range(1, order + 1):
         d = input_layer
         for i in range(1, len(layer_sizes) - 1):
@@ -76,41 +117,37 @@ def create_theta_tilde_maf(adjacency, order, layer_sizes, masks):
     model = keras.models.Model(inputs=input_layer, outputs=outs_c)
     return model
 
-######### Testing the LinearMasked layer #########
-mask = tf.constant([[1, 0, 0],
-                                 [1, 0, 0],
-                                 [1, 0, 0],
-                                 [1, 0, 0]], dtype=tf.float32)
-mask = tf.transpose(mask)
+def to_theta3(theta_tilde):
+    """
+    Converts the unrestricted input parameter theta_tilde to the restricted theta. 
+    The input parameter theta_tilde is a tensor of shape (batch_size, |x|, order) 
+    where |x| is the number of features and order is the order of the MAF. 
 
-model = Sequential()
-model.add(LinearMasked(units=4, mask=mask))
-#....
-x = tf.ones((5, 3))
-y = model(x)  # Apply the mask
-print(y)
+    Parameters:
+    theta_tilde (type): Description of parameter theta_tilde.
 
-######## Testing the model ########
-hidden_features = (2,2)
-adjacency = np.array([[0, 0, 0],
-                         [1, 0, 0],
-                         [1, 0, 0]]) == 1 #Needs to be a boolean matrix
-masks = create_masks_np(adjacency = adjacency, hidden_features=hidden_features)
-print(masks)
+    Returns:
+    type: Description of return value.
+    """
+    if len(theta_tilde.shape) != 3:
+        raise ValueError("theta_tilde must have shape (batch_size, |x|, order)")
 
-######### Keras Model #########
-layer_sizes = (adjacency.shape[1], *hidden_features, adjacency.shape[0])
-model = create_theta_tilde_maf(adjacency=adjacency, order = 2, layer_sizes=layer_sizes, masks=masks)
-print(model.summary())
-x = tf.ones((5,3))
-print(model(x))
-d = tf.random.normal((5,3), stddev=3.0)
-print(model(d))
+    # Ensure that shift is the same dtype as theta_tilde
+    shift = tf.convert_to_tensor(np.log(2) * theta_tilde.shape[-1] / 2, dtype=theta_tilde.dtype)
+    
+    order = tf.shape(theta_tilde)[2]
+    widths = tf.nn.softplus(theta_tilde[:, :, 1:order])
+    widths = tf.concat([theta_tilde[:, :, 0:1], widths], axis=-1)
+    
+    # Ensure subtraction happens with tensors of the same dtype
+    return tf.cumsum(widths, axis=-1) - shift
 
-from keras.utils import plot_model
-plot_model(model, to_file='model_graph.png', show_shapes=True)
-
-
+# Sample Standard Logistic
+def sample_standard_logistic(shape, epsilon=1e-7):
+    uniform_samples = tf.random.uniform(shape, minval=0, maxval=1)
+    clipped_uniform_samples = tf.clip_by_value(uniform_samples, epsilon, 1 - epsilon)
+    logistic_samples = tf.math.log(clipped_uniform_samples / (1 - clipped_uniform_samples))
+    return logistic_samples
 
 
 
