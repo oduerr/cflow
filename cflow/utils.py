@@ -6,7 +6,13 @@ import numpy as np
 def print_hello():
     print("Hello from clflow.utils")
 
-def create_masks_np(adjacency, hidden_features=(64, 64), activation='relu'):
+def scale_df(dat_tf):
+    dat_min = tf.reduce_min(dat_tf, axis=0)
+    dat_max = tf.reduce_max(dat_tf, axis=0)
+    dat_scaled = (dat_tf - dat_min) / (dat_max - dat_min)
+    return dat_scaled
+
+def create_masks_npEGAL(adjacency, hidden_features=(64, 64), activation='relu'):
     out_features, in_features = adjacency.shape
     adjacency, inverse_indices = np.unique(adjacency, axis=0, return_inverse=True)
     precedence = np.dot(adjacency.astype(int), adjacency.T.astype(int)) == adjacency.sum(axis=-1, keepdims=True).T
@@ -32,7 +38,7 @@ def create_masks_np(adjacency, hidden_features=(64, 64), activation='relu'):
         masks.append(mask)
     return masks
 
-class LinearMasked(keras.layers.Layer):
+class LinearMaskedTOBEDEL(keras.layers.Layer):
     
     def __init__(self, units=32, mask=None, name=None, **kwargs):
         super().__init__(name=name, **kwargs)
