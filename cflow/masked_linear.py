@@ -46,9 +46,10 @@ class LinearMasked(keras.layers.Layer):
             shape=(input_shape[-1], self.units),
             initializer="random_normal",
             trainable=True,
+            name = 'w'
         )
         self.b = self.add_weight(
-            shape=(self.units,), initializer="random_normal", trainable=True
+            shape=(self.units,), initializer="random_normal", trainable=True, name='b'
         )
 
         # Handle the mask conversion if it's a dictionary (when loaded from a saved model)

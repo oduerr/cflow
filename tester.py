@@ -5,6 +5,21 @@ from keras import layers, Sequential, Input
 from sklearn.preprocessing import StandardScaler
 from cflow.masked_linear import create_masks_np, LinearMasked, create_theta_tilde_maf, dag_loss
 
+import sys
+import os
+
+import sys
+import os
+
+# Path to the Python executable
+python_executable_path = sys.executable
+
+# Getting the Conda environment name
+conda_env_name = os.environ.get('CONDA_DEFAULT_ENV', 'Unknown')
+
+print("Python Executable Path:", python_executable_path)
+print("Conda Environment Name:", conda_env_name)
+
 ######### DGP #########
 def dgp(n_obs):
     print("=== Using the DGP of the VACA1 paper in the linear Fashion (Tables 5/6)")
